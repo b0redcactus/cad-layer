@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DXF layerek kiolvasása (kliensoldali)</title>
+  <style>
+    :root { --bg:#0f1115; --panel:#161920; --text:#e8eaf0; --muted:#9aa3b2; --accent:#4ea1ff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Noto Sans", Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; color: var(--text); background: linear-gradient(180deg, #0b0d12, #0f1115); }
+    header { padding: 24px clamp(16px, 4vw, 40px); background: transparent; border-bottom: 1px solid #1f2430; }
+    h1 { margin: 0 0 6px; font-size: clamp(20px, 2.6vw, 28px); }
+    p.sub { margin: 0; color: var(--muted); }
+    .container { padding: 24px clamp(16px, 4vw, 40px); }
+    .card { background: var(--panel); border: 1px solid #222838; border-radius: 14px; padding: 18px; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+    .stack { display: grid; gap: 16px; }
+    .uploader { border: 2px dashed #2b3448; border-radius: 12px; padding: 22px; text-align: center; transition: .2s border-color, .2s background;
+      background: #11141b; }
+    .uploader.dragover { border-color: var(--accent); background: #0e1320; }
+    .uploader input[type=file] { display: none; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 10px; border: 1px solid #2a3346; background: #121723; color: var(--text); cursor: pointer; }
+    .btn:hover { background: #151c2b; }
+    .small { color: var(--muted); font-size: 13px; }
+    .grid { display: grid; gap: 16px; }
+    @media (min-width: 900px) { .grid { grid-template-columns: 1.1fr 2fr; } }
+
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid #232a3b; text-align: left; font-size: 14px; }
+    th { color: #b8c3d9; position: sticky; top: 0; background: var(--panel); z-index: 1; }
+    tbody tr:hover { background: #141a27; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .pill { display:inline-block; padding:2px 8px; border:1px solid #2a3346; border-radius:999px; font-size:12px; color:#c7d2e5; }
+    .error { color: #ff7a7a; }
+    .ok { color: #6ee7a1; }
+    .filesum { display:flex; gap:12px; flex-wrap: wrap; }
+    .chip { border:1px solid #2b3448; background:#121723; border-radius: 999px; padding:6px 10px; font-size: 13px; }
+    .footer-note { color: var(--muted); font-size: 12px; margin-top: 12px; }
+    details { background:#11141b; border:1px solid #222838; border-radius:10px; padding: 10px 12px; }
+    summary { cursor:pointer; color:#c7d2e5; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>DXF layerek kiolvasása</h1>
+    <p class="sub">Tölts fel egy vagy több <strong>*.dxf</strong> fájlt – a böngésző helyben feldolgozza és kilistázza a layereket.</p>
+  </header>
+
+  <div class="container">
+    <div class="grid">
+      <div class="stack">
+        <div class="card">
+          <div id="drop" class="uploader" tabindex="0">
+            <p><strong>Húzd ide</strong> a DXF fájlokat vagy
+              <label class="btn" for="fileInput">válassz fájlt…</label>
+            </p>
+            <input id="fileInput" type="file" accept=".dxf,.DXF" multiple />
+            <p class="small">Csak DXF. A DWG → DXF konverzió nem böngészőben történik.</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="stack">
+            <div class="filesum" id="fileSummary"></div>
+            <div id="status" class="small"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <details>
+            <summary>Hasznos tudnivalók</summary>
+            <ul>
+              <li>Egyes DXF-ek kódlapja (encoding) nem UTF‑8; ha hibát látsz, próbáld meg a fájlt újramenteni UTF‑8-ra CAD-ből.</li>
+              <li>DWG fájlokat a legtöbb kliensoldali könyvtár nem tudja közvetlenül olvasni – konvertáld DXF-re.</li>
+              <li>A rétegekhez tartozó entitásszám és néhány tulajdonság (szín, típus, zárolt/fagyasztott) megjelenik, ha benne van a fájlban.</li>
+            </ul>
+          </details>
+        </div>
+      </div>
+
+      <div class="card" style="overflow:auto; max-height: 70vh;">
+        <table id="layerTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Layer név</th>
+              <th>Entitások</th>
+              <th>Szín (index)</th>
+              <th>Linetype</th>
+              <th>Fagyasztva</th>
+              <th>Zárolt</th>
+              <th>Plot</th>
+              <th>Lineweight</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <p class="footer-note">Kliensoldali feldolgozás – a fájlok nem kerülnek fel szerverre.</p>
+  </div>
+
+  <!-- DXF parser (browser build) -->
+  <script src="https://cdn.jsdelivr.net/npm/dxf-parser/dist/dxf-parser.min.js"></script>
+  <script>
+    // UI elemek
+    const fileInput = document.getElementById('fileInput');
+    const drop = document.getElementById('drop');
+    const layerTableBody = document.querySelector('#layerTable tbody');
+    const statusEl = document.getElementById('status');
+    const fileSummary = document.getElementById('fileSummary');
+
+    // Drag and drop viselkedés
+    ['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); drop.classList.add('dragover'); }));
+    ;['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); drop.classList.remove('dragover'); }));
+    drop.addEventListener('drop', e => handleFiles(e.dataTransfer.files));
+    drop.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', e => handleFiles(e.target.files));
+
+    function setStatus(msg, ok=true){ statusEl.textContent = msg; statusEl.className = ok ? 'small ok' : 'small error'; }
+
+    function clearTable(){ layerTableBody.innerHTML = ''; }
+
+    function summarizeFiles(files){
+      fileSummary.innerHTML = '';
+      Array.from(files).forEach(f => {
+        const el = document.createElement('span');
+        el.className = 'chip';
+        el.textContent = `${f.name} (${Math.round(f.size/1024)} kB)`;
+        fileSummary.appendChild(el);
+      });
+    }
+
+    async function handleFiles(fileList){
+      if(!fileList || fileList.length === 0) return;
+      summarizeFiles(fileList);
+      clearTable();
+      setStatus('Feldolgozás…');
+
+      let totalLayers = 0;
+      let rows = [];
+
+      for(const file of fileList){
+        if(!/\.dxf$/i.test(file.name)){
+          setStatus(`Kihagyva: ${file.name} – nem DXF fájl.`, false);
+          continue;
+        }
+        try{
+          const text = await file.text();
+          const parser = new DxfParser();
+          const dxf = parser.parseSync(text);
+
+          // Layertábla – a dxf-parser általában tömbként adja vissza
+          const layers = (dxf?.tables?.layers) || [];
+
+          // Entitások rétegenkénti számolása
+          const counts = Object.create(null);
+          for(const ent of (dxf?.entities || [])){
+            const ln = ent.layer || '0';
+            counts[ln] = (counts[ln] || 0) + 1;
+          }
+
+          layers.forEach((ly, idx) => {
+            const name = ly.name || `(névtelen ${idx+1})`;
+            const row = {
+              name,
+              count: counts[name] || 0,
+              colorNumber: (ly.colorNumber ?? ''),
+              linetype: (ly.lineTypeName ?? ''),
+              frozen: truthy(ly.frozen),
+              locked: truthy(ly.locked),
+              plot: truthy(ly.plot),
+              lineweight: (ly.lineweight ?? '')
+            };
+            rows.push(row);
+            totalLayers++;
+          });
+        }catch(err){
+          console.error(err);
+          setStatus(`Hiba a(z) ${file.name} fájl feldolgozásakor: ${err.message || err}`, false);
+        }
+      }
+
+      // Táblázat feltöltése (név szerint rendezve)
+      rows.sort((a,b) => a.name.localeCompare(b.name, 'hu'));
+      const frag = document.createDocumentFragment();
+      rows.forEach((r, i) => frag.appendChild(tr([
+        cell(i+1, 'mono'),
+        cell(r.name, 'mono'),
+        cell(r.count.toString()),
+        cell(String(r.colorNumber ?? '')),
+        cell(r.linetype || ''),
+        cell(r.frozen),
+        cell(r.locked),
+        cell(r.plot),
+        cell(String(r.lineweight ?? '')),
+      ])));
+      layerTableBody.appendChild(frag);
+
+      setStatus(totalLayers ? `Kész: ${totalLayers} layer összesen.` : 'Nem találtunk layereket.', !!totalLayers);
+    }
+
+    function tr(tds){ const tr=document.createElement('tr'); tds.forEach(td=>tr.appendChild(td)); return tr; }
+    function cell(text, cls){ const td=document.createElement('td'); if(cls) td.className=cls; td.textContent = text; return td; }
+    function truthy(v){ return v === true || v === 1 ? 'igen' : (v === false || v === 0 ? 'nem' : ''); }
+  </script>
+</body>
+</html>
