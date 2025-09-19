@@ -146,22 +146,49 @@
           continue;
         }
         try{
+          // Bináris DXF felismerése
+          const blobStart = file.slice(0, 64);
+          const headText = await blobStart.text();
+          if(/AutoCAD Binary DXF/i.test(headText)){
+            setStatus(`A(z) ${file.name} bináris DXF – kérlek mentsd szöveges (ASCII) DXF-ként.`, false);
+            continue;
+          }
+
           const text = await file.text();
           const parser = new DxfParser();
           const dxf = parser.parseSync(text);
 
-          // Layertábla – a dxf-parser általában tömbként adja vissza
-          const layers = (dxf?.tables?.layers) || [];
+          // Verzió / kódlap infó (ha van)
+          const acadver = (dxf?.header?.$ACADVER ?? '') || (dxf?.header?.ACADVER ?? '');
+          const codepage = (dxf?.header?.$DWGCODEPAGE ?? '') || (dxf?.header?.DWGCODEPAGE ?? '');
+          if(acadver){
+            setStatus(`DXF verzió: ${acadver}${codepage?` • kódlap: ${codepage}`:''}`);
+          }
 
-          // Entitások rétegenkénti számolása
+          // 1) Layertábla (ha van)
+          const tableLayers = Array.isArray(dxf?.tables?.layers) ? dxf.tables.layers : [];
+
+          // 2) Entitásokból rétegek összegyűjtése fallback-ként
           const counts = Object.create(null);
-          for(const ent of (dxf?.entities || [])){
-            const ln = ent.layer || '0';
+          const entities = Array.isArray(dxf?.entities) ? dxf.entities : [];
+          for(const ent of entities){
+            const ln = (ent && ent.layer) ? String(ent.layer) : '0';
             counts[ln] = (counts[ln] || 0) + 1;
           }
 
-          layers.forEach((ly, idx) => {
-            const name = ly.name || `(névtelen ${idx+1})`;
+          // Egyes DXF-ekben a layertábla hiányozhat – ilyenkor az entitások alapján állítjuk elő
+          const layerNames = new Set(
+            (tableLayers.length ? tableLayers.map(l => l.name) : Object.keys(counts))
+          );
+
+          if(layerNames.size === 0 && entities.length > 0){
+            // Ha vannak entitások, de nincs layer információ, feltételezzük a "0" réteget
+            layerNames.add('0');
+          }
+
+          // Sorok felépítése: ha van táblainfó, abból olvasunk részleteket; különben csak név + count
+          for(const name of Array.from(layerNames)){
+            const ly = tableLayers.find(l => l.name === name) || {};
             const row = {
               name,
               count: counts[name] || 0,
@@ -174,7 +201,7 @@
             };
             rows.push(row);
             totalLayers++;
-          });
+          }
         }catch(err){
           console.error(err);
           setStatus(`Hiba a(z) ${file.name} fájl feldolgozásakor: ${err.message || err}`, false);
@@ -197,7 +224,7 @@
       ])));
       layerTableBody.appendChild(frag);
 
-      setStatus(totalLayers ? `Kész: ${totalLayers} layer összesen.` : 'Nem találtunk layereket.', !!totalLayers);
+      setStatus(totalLayers ? `Kész: ${totalLayers} layer összesen.` : 'Nem találtunk layereket vagy az állomány üres. Ellenőrizd, hogy szöveges (ASCII) DXF-e a fájl.', !!totalLayers);
     }
 
     function tr(tds){ const tr=document.createElement('tr'); tds.forEach(td=>tr.appendChild(td)); return tr; }
